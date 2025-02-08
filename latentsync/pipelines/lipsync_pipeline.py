@@ -36,8 +36,17 @@ from ..whisper.audio2feature import Audio2Feature
 import tqdm
 import soundfile as sf
 
-logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
+##
+
+from gfpgan import GFPGANer
+from basicsr.archs.rrdbnet_arch import RRDBNet
+from realesrgan import RealESRGANer
+from codeformer import CodeFormerRestorer
+##
+
+
+logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 class LipsyncPipeline(DiffusionPipeline):
     _optional_components = []
@@ -57,6 +66,12 @@ class LipsyncPipeline(DiffusionPipeline):
         ],
     ):
         super().__init__()
+
+            ####
+        # Initialize face enhancement related attributes
+        self.face_enhancer = None
+        self.superres_method = None
+            ####
 
         if hasattr(scheduler.config, "steps_offset") and scheduler.config.steps_offset != 1:
             deprecation_message = (
@@ -116,6 +131,57 @@ class LipsyncPipeline(DiffusionPipeline):
         self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
 
         self.set_progress_bar_config(desc="Steps")
+
+    def enable_superres(self, method: str):
+        """Enable super-resolution enhancement with specified method."""
+        self.superres_method = method
+        if method == "GFPGAN":
+            from gfpgan import GFPGANer
+            from basicsr.archs.rrdbnet_arch import RRDBNet
+            from basicsr.utils.realesrgan_utils import RealESRGANer
+            
+            self.face_enhancer = GFPGANer(
+                model_path='checkpoints/GFPGANv1.4.pth',
+                upscale=1,
+                arch='clean',
+                bg_upsampler=RealESRGANer(
+                    scale=2,
+                    model_path='checkpoints/realesr-general-x4v3.pth',
+                    model=RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
+                )
+            )
+        elif method == "CodeFormer":
+            from codeformer.codeformer_utils import CodeFormerRestorer
+            self.face_enhancer = CodeFormerRestorer().cuda()
+
+
+    def enhance_frame(self, frame, mask):
+        """Enhance a single frame using the selected super-resolution method."""
+        if self.face_enhancer is None or frame is None:
+            return frame
+
+        mask_gray = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+        contours, _ = cv2.findContours(mask_gray, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if not contours:
+            return frame
+
+        cnt = max(contours, key=cv2.contourArea)
+        x, y, w, h = cv2.boundingRect(cnt)
+        face_roi = frame[y:y+h, x:x+w]
+
+        try:
+            if self.superres_method == "GFPGAN":
+                _, _, enhanced = self.face_enhancer.enhance(face_roi, has_aligned=False)
+            else:
+                enhanced = self.face_enhancer.enhance(face_roi, fidelity_weight=0.8)
+            
+            enhanced = cv2.resize(enhanced, (w, h))
+            frame[y:y+h, x:x+w] = enhanced
+        except Exception as e:
+            print(f"Enhancement failed: {str(e)}")
+        
+        return frame
 
     def enable_vae_slicing(self):
         self.vae.enable_slicing()
