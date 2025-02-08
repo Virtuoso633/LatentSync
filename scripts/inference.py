@@ -15,6 +15,7 @@
 import argparse
 from omegaconf import OmegaConf
 import torch
+import cv2
 from diffusers import AutoencoderKL, DDIMScheduler
 from latentsync.models.unet import UNet3DConditionModel
 from latentsync.pipelines.lipsync_pipeline import LipsyncPipeline
@@ -73,6 +74,10 @@ def main(config, args):
 
     print(f"Initial seed: {torch.initial_seed()}")
 
+    # Enable super-resolution
+    if args.superres:
+        pipeline.enable_superres(args.superres)
+
     pipeline(
         video_path=args.video_path,
         audio_path=args.audio_path,
@@ -97,6 +102,7 @@ if __name__ == "__main__":
     parser.add_argument("--inference_steps", type=int, default=20)
     parser.add_argument("--guidance_scale", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=1247)
+    parser.add_argument("--superres", choices=['GFPGAN', 'CodeFormer'])
     args = parser.parse_args()
 
     config = OmegaConf.load(args.unet_config_path)
